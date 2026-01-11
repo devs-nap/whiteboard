@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!-- Viewport adjustment for Mobile: Prevents zooming and scrolling while drawing -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SyncSketch | Friends Whiteboard</title>
+
+    <!-- PeerJS for Multiplayer -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+    <style>
+        :root {
+            --bg-color: #f8fafc;
+            --panel-bg: #ffffff;
+            --text-color: #1e293b;
+            --accent-color: #2563eb;
+            --accent-hover: #1d4ed8;
+            --border-color: #e2e8f0;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            --tool-size: 44px;
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+        body {
+            margin: 0; padding: 0;
+            background-color: var(--bg-color);
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            overflow: hidden; /* Critical for mobile to stop bounce scrolling */
+            color: var(--text-color);
+            position: fixed; /* Lock body in place */
+            width: 100%; height: 100%;
+        }
+
+        /* --- Landing Page --- */
+        #landing-page {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(135deg, #fdfbfb 0%, #ebedee 100%);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 200;
+            transition: transform 0.5s ease, opacity 0.5s ease;
+        }
+
+        #landing-page.hidden { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+
+        .hero-content {
+            text-align: center; background: white; padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+            max-width: 450px; width: 90%;
+        }
+
+        .hero-title {
+            font-size: 2rem; font-weight: 800; margin: 0 0 10px 0;
+            color: var(--accent-color);
+        }
+
+        .name-input {
+            width: 100%; padding: 12px 16px; border: 2px solid #e5e7eb;
+            border-radius: 10px; font-size: 1rem; margin-top: 10px; outline: none;
+            transition: border-color 0.2s;
+        }
+        .name-input:focus { border-color: var(--accent-color); }
+
+        .start-btn {
+            width: 100%; padding: 14px; font-size: 1.1rem; margin-top: 15px;
+            background: var(--accent-color); color: white; border: none;
+            border-radius: 10px; cursor: pointer; font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        .start-btn:hover { opacity: 0.9; }
+
+        /* --- Main App --- */
+        #app-container {
+            width: 100%; height: 100%; display: flex; flex-direction: column;
+            opacity: 0; transition: opacity 0.5s ease 0.3s;
+        }
+        #app-container.visible { opacity: 1; }
+
+        header {
+            height: 64px; background: var(--panel-bg); border-bottom: 1px solid var(--border-color);
+            display: flex; align-items: center; justify-content: space-between; padding: 0 16px;
+            box-shadow: var(--shadow); z-index: 10;
+        }
+
+        .brand { font-weight: 800; font-size: 1.25rem; color: var(--text-color); display: flex; align-items: center; gap: 8px; }
+        .brand span { color: var(--accent-color); }
+
+        /* --- Toolbar --- */
+        .toolbar {
+            background: var(--panel-bg); border-radius: 12px;
+            box-shadow: var(--shadow); padding: 8px;
+            display: flex; gap: 8px; z-index: 20;
+            border: 1px solid var(--border-color);
+            position: absolute;
+            transition: all 0.3s ease;
+        }
+
+        /* PC Layout */
+        @media (min-width: 769px) {
+            .toolbar {
+                top: 84px; left: 24px;
+                flex-direction: column;
+            }
+        }
+
+        /* Mobile Layout */
+        @media (max-width: 768px) {
+            .brand span { display: none; } /* Save space in header */
+            .toolbar {
+                bottom: 80px; /* Position above the color bar */
+                left: 50%; transform: translateX(-50%);
+                flex-direction: row;
+                width: 95%; overflow-x: auto; justify-content: space-between;
+            }
+        }
+
+        .tool-btn {
+            width: var(--tool-size); height: var(--tool-size);
+            border-radius: 8px; border: none; background: transparent;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; color: #64748b; transition: all 0.2s; flex-shrink: 0;
+        }
+        .tool-btn:hover { background: #f1f5f9; color: var(--accent-color); }
+        .tool-btn.active { background: #e0e7ff; color: var(--accent-color); }
+
+        /* --- Canvas --- */
+        #canvas-wrapper {
+            flex: 1; position: relative; cursor: crosshair;
+            background-image: radial-gradient(#cbd5e1 1.5px, transparent 1.5px);
+            background-size: 24px 24px;
+            overflow: hidden;
+            touch-action: none; /* Disables scrolling on canvas */
+        }
+
+        canvas { touch-action: none; display: block; }
+
+        /* --- Remote Cursors --- */
+        .remote-cursor {
+            position: absolute; pointer-events: none;
+            transition: top 0.1s linear, left 0.1s linear;
+            z-index: 5; display: flex; flex-direction: column; align-items: flex-start;
+        }
+
+        .cursor-pointer {
+            width: 0; height: 0;
+            border-left: 6px solid transparent; border-right: 6px solid transparent;
+            border-bottom: 12px solid; transform: rotate(-30deg);
+        }
+
+        .cursor-label {
+            background: var(--text-color); color: white; padding: 2px 6px;
+            border-radius: 4px; font-size: 10px; margin-top: 4px;
+            white-space: nowrap; font-weight: 600;
+        }
+
+        /* --- Properties Bar --- */
+        .properties-bar {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background: var(--panel-bg); border-radius: 12px;
+            box-shadow: var(--shadow);
+            padding: 10px 24px; display: flex; align-items: center; gap: 20px; z-index: 20;
+            border: 1px solid var(--border-color);
+            width: auto;
+        }
+        
+        @media (max-width: 768px) {
+            .properties-bar {
+                bottom: 15px; width: 95%; justify-content: space-between; padding: 8px 15px;
+                gap: 10px;
+            }
+            .size-label { display: none; } /* Save space on mobile */
+        }
+
+        .color-option {
+            width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+            border: 2px solid white; box-shadow: 0 0 0 2px transparent; transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        .color-option.selected { box-shadow: 0 0 0 2px var(--text-color); transform: scale(1.1); }
+
+        .color-option.rainbow {
+            background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
+        }
+
+        .size-label {
+            font-size: 0.8rem; font-weight: 600; color: #64748b;
+            margin-right: 5px;
+        }
+
+        button.header-btn {
+            background: white; border: 1px solid var(--border-color);
+            padding: 8px 12px; border-radius: 6px; cursor: pointer;
+            font-weight: 600; display: flex; align-items: center; gap: 6px;
+            color: #475569; font-size: 0.85rem;
+        }
+        /* Mobile: Hide text inside buttons, show only icon if needed, or make smaller */
+        @media (max-width: 600px) {
+            .btn-text { display: none; }
+            button.header-btn { padding: 8px; }
+        }
+
+        button.header-btn:hover { background: #f8fafc; }
+        button.primary { background: var(--accent-color); color: white; border: none; }
+        button.primary:hover { background: var(--accent-hover); }
+
+        /* --- Modal --- */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); z-index: 100;
+            display: flex; justify-content: center; align-items: center;
+            opacity: 0; pointer-events: none; transition: opacity 0.2s;
+        }
+        .modal-overlay.open { opacity: 1; pointer-events: auto; }
+
+        .modal {
+            background: white; width: 90%; max-width: 450px;
+            padding: 24px; border-radius: 16px; box-shadow: 0 20px 25px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+
+        .room-actions { display: flex; gap: 10px; margin-bottom: 20px; }
+        .room-actions button { flex: 1; justify-content: center; }
+
+        .room-code-display {
+            background: #f1f5f9; padding: 15px; border-radius: 8px; font-family: monospace;
+            font-size: 1.2rem; margin: 15px 0; border: 1px dashed #cbd5e1; user-select: text;
+            word-break: break-all;
+        }
+
+        .join-input {
+            width: 100%; padding: 12px; margin-bottom: 10px;
+            border: 2px solid #e2e8f0; border-radius: 8px; font-size: 1rem;
+        }
+
+        svg { width: 20px; height: 20px; fill: currentColor; }
+    </style>
+</head>
+<body>
+
+    <!-- Landing Page -->
+    <div id="landing-page">
+        <div class="hero-content">
+            <h1 class="hero-title">SyncSketch</h1>
+            <p style="color: #64748b; margin-bottom: 24px; line-height: 1.5;">
+                A simple, real-time whiteboard.<br>
+                Enter your name to start drawing.
+            </p>
+            <input type="text" id="username" class="name-input" placeholder="Your Name" maxlength="15" onkeypress="handleEnter(event)">
+            <button class="start-btn" onclick="startApp()">Enter Whiteboard</button>
+        </div>
+    </div>
+
+    <!-- Main Application -->
+    <div id="app-container">
+        <header>
+            <div class="brand">
+                <svg viewBox="0 0 24 24"><path d="M21 3L3 21" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+                Sync<span>Sketch</span>
+            </div>
+
+            <div style="display: flex; gap: 10px;">
+                <button class="header-btn" onclick="app.clearCanvas()">
+                    <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    <span class="btn-text">Clear</span>
+                </button>
+                <button class="header-btn" onclick="app.downloadImage()">
+                    <span class="btn-text">Download</span>
+                    <!-- Icon for mobile only view -->
+                    <svg class="mobile-only-icon" viewBox="0 0 24 24" style="display:none;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                </button>
+                <button class="header-btn primary" onclick="app.showInvite()">
+                    <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+                    <span class="btn-text">Invite</span>
+                </button>
+            </div>
+        </header>
+
+        <div style="flex: 1; display: flex; position: relative;">
+            <div class="toolbar">
+                <button class="tool-btn active" id="tool-pencil" onclick="app.setTool('pencil')" title="Pencil">
+                    <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                </button>
+                <button class="tool-btn" id="tool-line" onclick="app.setTool('line')" title="Line">
+                    <svg viewBox="0 0 24 24"><path d="M21 3L3 21" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+                </button>
+                <button class="tool-btn" id="tool-rect" onclick="app.setTool('rect')" title="Rectangle">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                </button>
+                <button class="tool-btn" id="tool-circle" onclick="app.setTool('circle')" title="Circle/Oval">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                </button>
+                <button class="tool-btn" id="tool-triangle" onclick="app.setTool('triangle')" title="Triangle">
+                    <svg viewBox="0 0 24 24"><path d="M12 2L2 22h20L12 2z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                </button>
+                <button class="tool-btn" id="tool-arrow" onclick="app.setTool('arrow')" title="Arrow">
+                    <svg viewBox="0 0 24 24"><path d="M19 12l-7-7v5H5v4h7v5l7-7z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                </button>
+                <!-- Separator for mobile optimization -->
+                <div style="width:1px; background:#e2e8f0; height:100%; margin:0 4px; display:none;" class="mobile-sep"></div>
+                
+                <button class="tool-btn" id="tool-eraser" onclick="app.setTool('eraser')" title="Eraser">
+                    <svg viewBox="0 0 24 24"><path d="M16.24 3.56l4.95 4.94c.78.79.78 2.05 0 2.84L12 20.53a4.008 4.008 0 0 1-5.66 0L2.81 17c-.78-.79-.78-2.05 0-2.84l10.6-10.6c.79-.78 2.05-.78 2.83 0zM4.22 15.58l3.54 3.53c.78.79 2.04.79 2.83 0L12 17.71 6.34 12.05 4.22 14.17c-.79.78-.79 2.05 0 1.41z"/></svg>
+                </button>
+                <button class="tool-btn" onclick="app.undo()" title="Undo">
+                    <svg viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+                </button>
+            </div>
+
+            <div id="canvas-wrapper">
+                <canvas id="drawing-canvas"></canvas>
+            </div>
+
+            <!-- Properties Bar -->
+            <div class="properties-bar">
+                <!-- Color Section -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div class="color-option selected" style="background-color: #1e293b;" data-color="#1e293b"></div>
+                    <div class="color-option" style="background-color: #ef4444;" data-color="#ef4444"></div>
+                    <div class="color-option" style="background-color: #3b82f6;" data-color="#3b82f6"></div>
+                    <div class="color-option" style="background-color: #10b981;" data-color="#10b981"></div>
+                    <div class="color-option" style="background-color: #f59e0b;" data-color="#f59e0b"></div>
+
+                    <!-- Hidden input + Trigger Button -->
+                    <input type="color" id="custom-picker" style="width:0; height:0; visibility:hidden; position:absolute;">
+                    <div class="color-option rainbow" onclick="document.getElementById('custom-picker').click()" title="Choose Custom Color"></div>
+                </div>
+
+                <div style="width: 1px; height: 32px; background: #e2e8f0;"></div>
+
+                <!-- Size Section -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="size-label">Size</span>
+                    <!-- Slider -->
+                    <input type="range" id="stroke-width" min="1" max="50" value="4" style="width: 80px; accent-color: var(--accent-color);">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Invite/Connect Modal -->
+    <div class="modal-overlay" id="invite-modal">
+        <div class="modal">
+            <h2 style="margin-top:0;">Collaborate Online</h2>
+            <p style="color:#666; font-size: 0.9rem;">Connect with friends anywhere.</p>
+
+            <div id="connection-menu">
+                <div class="room-actions">
+                    <button class="header-btn primary" onclick="app.createRoom()">Create Room</button>
+                    <button class="header-btn" onclick="app.showJoinInput()">Join Room</button>
+                </div>
+
+                <div id="host-ui" style="display:none;">
+                    <p style="margin:0; font-size:0.9rem;">Share this ID with your friend:</p>
+                    <div class="room-code-display" id="my-room-id">...</div>
+                    <button class="header-btn" onclick="app.closeModal()">Close & Wait</button>
+                </div>
+
+                <div id="join-ui" style="display:none;">
+                    <input type="text" id="join-id-input" class="join-input" placeholder="Enter Room ID">
+                    <button class="header-btn primary" onclick="app.joinRoom()">Connect</button>
+                </div>
+            </div>
+
+            <div style="margin-top: 15px;">
+                <button class="header-btn" onclick="app.closeModal()" style="border:none; color: #999; width:100%; justify-content: center;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function startApp() {
+            const inputName = document.getElementById('username').value.trim();
+            const username = inputName || "Artist";
+
+            document.getElementById('landing-page').classList.add('hidden');
+            document.getElementById('app-container').classList.add('visible');
+
+            if(!window.app) {
+                window.app = new WhiteboardApp(username);
+            }
+        }
+
+        function handleEnter(e) { if(e.key === 'Enter') startApp(); }
+
+        class WhiteboardApp {
+            constructor(username) {
+                this.canvas = document.getElementById('drawing-canvas');
+                this.ctx = this.canvas.getContext('2d', { alpha: true });
+                this.wrapper = document.getElementById('canvas-wrapper');
+
+                this.username = username;
+                this.isDrawing = false;
+                this.currentTool = 'pencil';
+                this.currentColor = '#1e293b';
+                this.currentWidth = 4;
+                this.history = [];
+                this.historyStep = -1;
+
+                this.peer = new Peer();
+                this.myId = null;
+                this.connections = [];
+
+                this.init();
+            }
+
+            init() {
+                window.addEventListener('resize', () => this.resizeCanvas());
+                window.addEventListener('orientationchange', () => setTimeout(() => this.resizeCanvas(), 200));
+                this.resizeCanvas();
+
+                // Use Pointer Events for Unified PC/Mobile support
+                this.canvas.addEventListener('pointerdown', (e) => this.startDraw(e));
+                this.canvas.addEventListener('pointermove', (e) => this.draw(e));
+                this.canvas.addEventListener('pointerup', () => this.endDraw());
+                this.canvas.addEventListener('pointerleave', () => this.endDraw());
+
+                this.peer.on('open', (id) => {
+                    this.myId = id;
+                });
+
+                this.peer.on('connection', (conn) => {
+                    this.setupConnection(conn);
+                    setTimeout(() => {
+                        conn.send({ type: 'sync_image', img: this.canvas.toDataURL() });
+                    }, 500);
+                });
+
+                document.querySelectorAll('.color-option:not(.rainbow)').forEach(el => {
+                    el.addEventListener('click', (e) => {
+                        this.setColor(e.target.dataset.color);
+                        this.highlightColor(e.target);
+                    });
+                });
+
+                const picker = document.getElementById('custom-picker');
+                picker.addEventListener('input', (e) => {
+                    this.setColor(e.target.value);
+                    document.querySelector('.rainbow').style.border = `2px solid ${this.currentColor}`;
+                    this.highlightColor(document.querySelector('.rainbow'));
+                });
+
+                document.getElementById('stroke-width').addEventListener('input', (e) => {
+                    this.currentWidth = parseInt(e.target.value);
+                });
+
+                this.saveState();
+                
+                // Show mobile specific icons if needed via CSS check
+                if(window.innerWidth < 600) {
+                   document.querySelector('.mobile-only-icon').style.display = 'block';
+                }
+            }
+
+            highlightColor(el) {
+                document.querySelectorAll('.color-option').forEach(c => c.classList.remove('selected'));
+                el.classList.add('selected');
+            }
+
+            createRoom() {
+                document.getElementById('host-ui').style.display = 'block';
+                document.getElementById('join-ui').style.display = 'none';
+                document.getElementById('my-room-id').innerText = this.myId || "Generating...";
+            }
+
+            showJoinInput() {
+                document.getElementById('host-ui').style.display = 'none';
+                document.getElementById('join-ui').style.display = 'block';
+            }
+
+            joinRoom() {
+                const id = document.getElementById('join-id-input').value.trim();
+                if(!id) return alert("Please enter an ID");
+                const conn = this.peer.connect(id);
+                this.setupConnection(conn);
+                this.closeModal();
+            }
+
+            setupConnection(conn) {
+                this.connections.push(conn);
+                conn.on('data', (data) => this.handleRemoteEvent(data));
+                conn.on('close', () => {
+                     this.connections = this.connections.filter(c => c !== conn);
+                });
+            }
+
+            broadcast(data) {
+                this.connections.forEach(c => c.send(data));
+            }
+
+            resizeCanvas() {
+                let tempCanvas = document.createElement('canvas');
+                tempCanvas.width = this.canvas.width; tempCanvas.height = this.canvas.height;
+                if(this.canvas.width > 0) tempCanvas.getContext('2d').drawImage(this.canvas, 0, 0);
+
+                this.canvas.width = this.wrapper.clientWidth;
+                this.canvas.height = this.wrapper.clientHeight;
+                
+                if(tempCanvas.width > 0) this.ctx.drawImage(tempCanvas, 0, 0);
+                this.ctx.lineCap = 'round'; this.ctx.lineJoin = 'round';
+            }
+
+            getCoords(e) {
+                // Important for Mobile: Prevent default touch actions (scrolling)
+                // We do this in the event listener, but checking here creates safety
+                const rect = this.canvas.getBoundingClientRect();
+                return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            }
+
+            setTool(tool) {
+                this.currentTool = tool;
+                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                document.getElementById(`tool-${tool}`).classList.add('active');
+            }
+
+            setColor(color) { this.currentColor = color; }
+
+            startDraw(e) {
+                // Critical for Mobile: Stop the screen from scrolling when you touch the canvas
+                e.preventDefault(); 
+
+                this.isDrawing = true;
+                const { x, y } = this.getCoords(e);
+                this.startX = x; this.startY = y;
+
+                this.ctx.beginPath();
+                this.ctx.moveTo(x, y);
+                this.ctx.strokeStyle = this.currentTool === 'eraser' ? '#f8fafc' : this.currentColor;
+                this.ctx.lineWidth = this.currentWidth;
+
+                if (['line', 'rect', 'circle', 'triangle', 'arrow'].includes(this.currentTool)) {
+                    this.snapshot = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                }
+
+                this.broadcast({
+                    type: 'start', username: this.username,
+                    x, y, tool: this.currentTool, color: this.currentColor, width: this.currentWidth
+                });
+            }
+
+            draw(e) {
+                // Critical for Mobile
+                e.preventDefault();
+
+                const { x, y } = this.getCoords(e);
+
+                if (!this.isDrawing) {
+                    this.broadcast({ type: 'cursor', username: this.username, x, y, color: this.currentColor });
+                    return;
+                }
+
+                if (this.currentTool === 'pencil' || this.currentTool === 'eraser') {
+                    this.ctx.lineTo(x, y);
+                    this.ctx.stroke();
+                    this.broadcast({ type: 'draw', x, y });
+                } else {
+                    this.ctx.putImageData(this.snapshot, 0, 0);
+                    this.ctx.beginPath();
+
+                    if (this.currentTool === 'line') {
+                        this.ctx.moveTo(this.startX, this.startY);
+                        this.ctx.lineTo(x, y);
+                    } else if (this.currentTool === 'rect') {
+                        this.ctx.rect(this.startX, this.startY, x - this.startX, y - this.startY);
+                    } else if (this.currentTool === 'circle') {
+                        const centerX = (this.startX + x) / 2;
+                        const centerY = (this.startY + y) / 2;
+                        const radiusX = Math.abs(x - this.startX) / 2;
+                        const radiusY = Math.abs(y - this.startY) / 2;
+                        this.ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, 2 * Math.PI);
+                    } else if (this.currentTool === 'triangle') {
+                        this.ctx.moveTo(this.startX + (x - this.startX) / 2, this.startY);
+                        this.ctx.lineTo(this.startX, y);
+                        this.ctx.lineTo(x, y);
+                        this.ctx.closePath();
+                    } else if (this.currentTool === 'arrow') {
+                        const headlen = 20;
+                        const angle = Math.atan2(y - this.startY, x - this.startX);
+                        this.ctx.moveTo(this.startX, this.startY);
+                        this.ctx.lineTo(x, y);
+                        this.ctx.lineTo(x - headlen * Math.cos(angle - Math.PI / 6), y - headlen * Math.sin(angle - Math.PI / 6));
+                        this.ctx.moveTo(x, y);
+                        this.ctx.lineTo(x - headlen * Math.cos(angle + Math.PI / 6), y - headlen * Math.sin(angle + Math.PI / 6));
+                    }
+                    this.ctx.stroke();
+                }
+            }
+
+            endDraw() {
+                if (!this.isDrawing) return;
+                this.isDrawing = false;
+                this.ctx.closePath();
+                this.saveState();
+                this.broadcast({ type: 'end' });
+            }
+
+            saveState() {
+                if (this.historyStep < this.history.length - 1) this.history = this.history.slice(0, this.historyStep + 1);
+                this.history.push(this.canvas.toDataURL());
+                this.historyStep++;
+            }
+
+            undo() {
+                if (this.historyStep > 0) {
+                    this.historyStep--;
+                    const img = new Image();
+                    img.src = this.history[this.historyStep];
+                    img.onload = () => {
+                        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                        this.ctx.drawImage(img, 0, 0);
+                    };
+                    this.broadcast({ type: 'undo' });
+                }
+            }
+
+            clearCanvas() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.saveState();
+                this.broadcast({ type: 'clear' });
+            }
+
+            downloadImage() {
+                const link = document.createElement('a');
+                link.download = `syncsketch-${Date.now()}.png`;
+                link.href = this.canvas.toDataURL();
+                link.click();
+            }
+
+            showInvite() { document.getElementById('invite-modal').classList.add('open'); }
+            closeModal() { document.getElementById('invite-modal').classList.remove('open'); }
+
+            handleRemoteEvent(data) {
+                if (data.type === 'sync_image') {
+                    const img = new Image();
+                    img.src = data.img;
+                    img.onload = () => this.ctx.drawImage(img, 0, 0);
+                    return;
+                }
+                if (data.type === 'cursor' || data.type === 'start') {
+                    this.updateRemoteCursor(data.username, data.x, data.y, data.color || '#333');
+                }
+                if (data.type === 'start') {
+                    if (!this.remoteContexts) this.remoteContexts = {};
+                    this.remoteCtx = { ...data, isDrawing: true, startX: data.x, startY: data.y };
+                    this.ctx.beginPath(); this.ctx.moveTo(data.x, data.y);
+                }
+                if (data.type === 'draw') {
+                    const ctx = this.remoteCtx;
+                    if (ctx && ctx.isDrawing) {
+                        this.ctx.strokeStyle = ctx.tool === 'eraser' ? '#f8fafc' : ctx.color;
+                        this.ctx.lineWidth = ctx.width;
+                        this.ctx.lineTo(data.x, data.y);
+                        this.ctx.stroke();
+                        this.ctx.beginPath(); this.ctx.moveTo(data.x, data.y);
+                    }
+                }
+                if (data.type === 'end') {
+                    if(this.remoteCtx) {
+                        this.remoteCtx.isDrawing = false;
+                        this.ctx.closePath(); this.saveState();
+                    }
+                }
+                if (data.type === 'clear') { this.ctx.clearRect(0,0,this.canvas.width, this.canvas.height); this.saveState(); }
+                if (data.type === 'undo') { this.undo(); } 
+            }
+
+            updateRemoteCursor(name, x, y, color) {
+                const id = name.replace(/[^a-zA-Z0-9]/g, ''); // Sanitize ID
+                let cursor = document.getElementById(`cursor-${id}`);
+                if (!cursor) {
+                    cursor = document.createElement('div');
+                    cursor.id = `cursor-${id}`;
+                    cursor.className = 'remote-cursor';
+                    cursor.innerHTML = `<div class="cursor-pointer" style="border-bottom-color: ${color}"></div><div class="cursor-label">${name}</div>`;
+                    this.wrapper.appendChild(cursor);
+                }
+                clearTimeout(cursor.timeout);
+                cursor.style.display = 'flex';
+                cursor.style.top = y + 'px';
+                cursor.style.left = x + 'px';
+                cursor.timeout = setTimeout(() => { cursor.style.display = 'none'; }, 2000);
+            }
+        }
+    </script>
+</body>
+</html>
